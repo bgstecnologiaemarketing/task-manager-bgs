@@ -1,101 +1,130 @@
 import { PRI_MAP, memberById, CU_MEMBERS } from "./clickup";
 
+// ── Claude API (para IA / importação em bloco) ────────────────────────────────
 export async function callClaude(body) {
   const res = await fetch("/api/claude", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error("Erro na API");
+  if (!res.ok) throw new Error("Erro na API Claude");
   return res.json();
 }
 
-// Mapeia prioridade do ClickUp para o padrão do app
+// ── ClickUp REST API (via proxy seguro) ───────────────────────────────────────
+async function cuGet(path) {
+  const res = await fetch(`/api/clickup?path=${encodeURIComponent(path)}`);
+  return res.json();
+}
+async function cuPost(path, body) {
+  const res = await fetch("/api/clickup", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, body }),
+  });
+  return res.json();
+}
+async function cuPut(path, body) {
+  const res = await fetch("/api/clickup", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, body }),
+  });
+  return res.json();
+}
+
+// Mapeia prioridade ClickUp → app
 function mapPriority(p) {
   if (!p) return "media";
-  const v = typeof p === "object" ? p.priority : p;
-  if (v === "urgent" || v === "1") return "alta";
-  if (v === "high" || v === "2") return "alta";
-  if (v === "normal" || v === "3") return "media";
-  if (v === "low" || v === "4") return "baixa";
+  const v = typeof p === "object" ? String(p.priority) : String(p);
+  if (v === "1" || v === "urgent") return "alta";
+  if (v === "2" || v === "high")   return "alta";
+  if (v === "3" || v === "normal") return "media";
+  if (v === "4" || v === "low")    return "baixa";
   return "media";
 }
 
-// Mapeia status do ClickUp para o padrão do app
+// Mapeia status ClickUp → app
 function mapStatus(s) {
   if (!s) return "todo";
-  const v = (typeof s === "object" ? s.status : s).toLowerCase();
+  const v = (typeof s === "object" ? s.status || s.type || "" : s).toLowerCase();
   if (v.includes("progress") || v.includes("progresso") || v.includes("andamento") || v === "active") return "doing";
-  if (v.includes("review") || v.includes("revisão") || v.includes("revisao")) return "review";
-  if (v.includes("done") || v.includes("complete") || v.includes("concluí") || v.includes("closed")) return "done";
+  if (v.includes("review")   || v.includes("revisão")   || v.includes("revisao"))  return "review";
+  if (v.includes("done")     || v.includes("complete")  || v.includes("concluí")   || v === "closed") return "done";
   return "todo";
 }
 
-// Busca tarefas reais do ClickUp via Claude MCP
-export async function fetchClickUpTasks() {
-  const data = await callClaude({
-    model: "claude-sonnet-4-20250514",
-    max_tokens: 4000,
-    mcp_servers: [{ type: "url", url: "https://mcp.clickup.com/mcp", name: "clickup" }],
-    messages: [{
-      role: "user",
-      content: `Use the ClickUp MCP to filter tasks from space IDs 90112854264 and 90113957085. Include open tasks only, ordered by due_date. Return ONLY a JSON array with no extra text, no markdown, no backticks. Each item must have exactly these fields:
-{
-  "id": "<clickup task id>",
-  "title": "<task name>",
-  "description": "",
-  "assigneeId": "<member id as string, or empty string if none - use ONLY these IDs: 242640789=Mateus, 81406921=Lucas, 158661063=Bruno>",
-  "dueDate": "<YYYY-MM-DD or empty string>",
-  "priority": "<alta|media|baixa>",
-  "status": "<todo|doing|review|done>",
-  "listId": "<list id>",
-  "clickupTaskId": "<same as id>",
-  "clickupUrl": "<task url>"
-}`
-    }],
-  });
-
-  try {
-    const text = data.content?.find((b) => b.type === "text")?.text || "";
-    const clean = text.replace(/```json|```/g, "").trim();
-    const s = clean.indexOf("[");
-    const e = clean.lastIndexOf("]");
-    if (s === -1 || e === -1) throw new Error("no array");
-    return JSON.parse(clean.slice(s, e + 1));
-  } catch {
-    return [];
+// Primeiro assignee que seja membro conhecido
+function mapAssignee(assignees) {
+  if (!assignees || assignees.length === 0) return "";
+  const known = ["242640789", "81406921", "158661063"];
+  for (const a of assignees) {
+    if (known.includes(String(a.id))) return String(a.id);
   }
+  return "";
 }
 
+// Converte timestamp ms → YYYY-MM-DD
+function msToDate(ms) {
+  if (!ms) return "";
+  try { return new Date(Number(ms)).toISOString().slice(0, 10); } catch { return ""; }
+}
+
+// ── Buscar tarefas reais do ClickUp ───────────────────────────────────────────
+export async function fetchClickUpTasks() {
+  const SPACE_IDS = ["90112854264", "90113957085"];
+  const allTasks = [];
+
+  for (const spaceId of SPACE_IDS) {
+    try {
+      // Busca listas do space
+      const spaceTasks = await cuGet(`/space/${spaceId}/task?include_closed=false&subtasks=false&order_by=due_date&page=0`);
+      if (spaceTasks.tasks) allTasks.push(...spaceTasks.tasks);
+    } catch {}
+  }
+
+  // Se não veio nada por space, tenta por team (workspace)
+  if (allTasks.length === 0) {
+    try {
+      const teamData = await cuGet("/team");
+      const teamId = teamData.teams?.[0]?.id;
+      if (teamId) {
+        const res = await cuGet(`/team/${teamId}/task?include_closed=false&subtasks=false&order_by=due_date&page=0`);
+        if (res.tasks) allTasks.push(...res.tasks);
+      }
+    } catch {}
+  }
+
+  return allTasks.map((t) => ({
+    id:            t.id,
+    title:         t.name,
+    description:   t.description || "",
+    assigneeId:    mapAssignee(t.assignees),
+    dueDate:       msToDate(t.due_date),
+    priority:      mapPriority(t.priority),
+    status:        mapStatus(t.status),
+    listId:        t.list?.id || "",
+    clickupTaskId: t.id,
+    clickupUrl:    t.url,
+  }));
+}
+
+// ── Criar tarefa no ClickUp ───────────────────────────────────────────────────
 export async function createClickUpTask(task, listId) {
   const member = memberById(task.assigneeId);
-  const data = await callClaude({
-    model: "claude-sonnet-4-20250514",
-    max_tokens: 1000,
-    mcp_servers: [{ type: "url", url: "https://mcp.clickup.com/mcp", name: "clickup" }],
-    messages: [{
-      role: "user",
-      content: `Create a ClickUp task with these details:
-- list_id: ${listId}
-- name: ${task.title}
-- description: ${task.description || ""}
-- priority: ${PRI_MAP[task.priority] || "normal"}
-${task.dueDate ? `- due_date: ${task.dueDate}` : ""}
-${member ? `- assignees: ["${member.id}"]` : ""}
-
-Reply ONLY with JSON: {"success":true,"task_id":"<id>","url":"<url>"}
-On failure: {"success":false,"error":"<reason>"}`,
-    }],
-  });
-  try {
-    const text = data.content?.find((b) => b.type === "text")?.text || "";
-    const clean = text.replace(/```json|```/g, "").trim();
-    const s = clean.indexOf("{"); const e = clean.lastIndexOf("}");
-    if (s !== -1 && e !== -1) return JSON.parse(clean.slice(s, e + 1));
-  } catch {}
-  return { success: true };
+  const body = {
+    name:        task.title,
+    description: task.description || "",
+    priority:    { alta: 1, media: 3, baixa: 4 }[task.priority] || 3,
+    ...(task.dueDate && { due_date: new Date(task.dueDate + "T12:00:00").getTime() }),
+    ...(member && { assignees: [Number(member.id)] }),
+  };
+  const res = await cuPost(`/list/${listId}/task`, body);
+  if (res.id) return { success: true, task_id: res.id, url: res.url };
+  return { success: false, error: res.err || "Erro desconhecido" };
 }
 
+// ── Parser de texto com IA ────────────────────────────────────────────────────
 export async function parseTasks(text) {
   const memberList = CU_MEMBERS.map((m) => `"${m.name}" → "${m.id}"`).join(", ");
   const data = await callClaude({
@@ -117,7 +146,7 @@ Retorne APENAS array JSON válido, sem texto extra.
 Texto: ${text}`,
     }],
   });
-  const raw = data.content?.find((b) => b.type === "text")?.text || "";
+  const raw   = data.content?.find((b) => b.type === "text")?.text || "";
   const clean = raw.replace(/```json|```/g, "").trim();
   const s = clean.indexOf("["); const e = clean.lastIndexOf("]");
   return JSON.parse(clean.slice(s, e + 1));
