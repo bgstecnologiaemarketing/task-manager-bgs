@@ -1,8 +1,4 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// Todas as chamadas de IA passam por /api/claude (server-side)
-// A chave da Anthropic nunca fica no browser
-// ─────────────────────────────────────────────────────────────────────────────
-import { PRI_MAP, memberById } from "./clickup";
+import { PRI_MAP, memberById, CU_MEMBERS } from "./clickup";
 
 export async function callClaude(body) {
   const res = await fetch("/api/claude", {
@@ -44,7 +40,6 @@ On failure: {"success":false,"error":"<reason>"}`,
 }
 
 export async function parseTasks(text) {
-  const { CU_MEMBERS } = await import("./clickup");
   const memberList = CU_MEMBERS.map((m) => `"${m.name}" → "${m.id}"`).join(", ");
   const data = await callClaude({
     model: "claude-sonnet-4-20250514",
