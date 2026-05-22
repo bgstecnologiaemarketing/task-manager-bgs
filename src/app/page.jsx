@@ -1,12 +1,13 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import KanbanColumn from "@/components/KanbanColumn";
 import ManualForm from "@/components/ManualForm";
 import BulkImport from "@/components/BulkImport";
 import Avatar from "@/components/Avatar";
-import { CU_MEMBERS, CU_LISTS } from "@/lib/clickup";
+import { CU_MEMBERS } from "@/lib/clickup";
 import { memberName } from "@/lib/clickup";
-import { COLORS, STATUS_LABELS, PRI, uid, isLate, daysLate, fmtDate, EMPTY_FORM, DEMO_TASKS, sel } from "@/lib/constants";
+import { COLORS, STATUS_LABELS, uid, isLate, daysLate, fmtDate, EMPTY_FORM, sel } from "@/lib/constants";
+import { fetchClickUpTasks } from "@/lib/api";
 
 const TABS = [
   { key:"kanban", label:"📋 Kanban" },
@@ -16,23 +17,53 @@ const TABS = [
 ];
 
 export default function Home() {
-  const [tasks, setTasks] = useState(() => DEMO_TASKS.map((t) => ({ ...EMPTY_FORM, ...t, id: uid() })));
-  const [view, setView]   = useState("kanban");
+  const [tasks, setTasks]     = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadMsg, setLoadMsg] = useState("Conectando ao ClickUp...");
+  const [view, setView]       = useState("kanban");
 
-  const lateTasks = tasks.filter(isLate);
+  useEffect(() => {
+    async function load() {
+      try {
+        setLoadMsg("Buscando tarefas do ClickUp...");
+        const cuTasks = await fetchClickUpTasks();
+        if (cuTasks.length > 0) {
+          setTasks(cuTasks.map((t) => ({ ...EMPTY_FORM, ...t, id: t.id || uid() })));
+          setLoadMsg("");
+        } else {
+          setLoadMsg("Nenhuma tarefa encontrada.");
+        }
+      } catch {
+        setLoadMsg("Erro ao carregar. Tente recarregar a página.");
+      }
+      setLoading(false);
+    }
+    load();
+  }, []);
+
+  const lateTasks  = tasks.filter(isLate);
   const updateTask = (id, ch) => setTasks((p) => p.map((t) => t.id === id ? { ...t, ...ch } : t));
-  const deleteTask = (id) => setTasks((p) => p.filter((t) => t.id !== id));
-  const addTasks   = (list) => {
+  const deleteTask = (id)     => setTasks((p) => p.filter((t) => t.id !== id));
+  const addTasks   = (list)   => {
     setTasks((p) => [...p, ...list.map((t) => ({ ...EMPTY_FORM, ...t, id: uid() }))]);
     setView("kanban");
   };
 
   const stats = [
-    { label:"Total",        value:tasks.length,                               bg:"#F1EFE8", color:"#5F5E5A", border:"#D3D1C7" },
+    { label:"Total",        value:tasks.length,                                bg:"#F1EFE8", color:"#5F5E5A", border:"#D3D1C7" },
     { label:"Em andamento", value:tasks.filter((t)=>t.status==="doing").length, bg:"#E6F1FB", color:"#185FA5", border:"#B5D4F4" },
-    { label:"Atrasadas",    value:lateTasks.length,                           bg:"#FCEBEB", color:"#A32D2D", border:"#F7C1C1" },
+    { label:"Atrasadas",    value:lateTasks.length,                            bg:"#FCEBEB", color:"#A32D2D", border:"#F7C1C1" },
     { label:"Concluídas",   value:tasks.filter((t)=>t.status==="done").length,  bg:"#EAF3DE", color:"#3B6D11", border:"#C0DD97" },
   ];
+
+  if (loading) return (
+    <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
+      height:"100vh", gap:16, fontFamily:"'DM Sans','Segoe UI',sans-serif" }}>
+      <div style={{ fontSize:32 }}>⏳</div>
+      <div style={{ fontSize:15, fontWeight:600, color:"#2C2C2A" }}>Carregando tarefas</div>
+      <div style={{ fontSize:13, color:"#888780" }}>{loadMsg}</div>
+    </div>
+  );
 
   return (
     <div style={{ fontFamily:"'DM Sans','Segoe UI',sans-serif", background:"#F7F6F2", minHeight:"100vh", paddingBottom:48 }}>
@@ -56,7 +87,7 @@ export default function Home() {
         <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
           {TABS.map(({ key, label }) => {
             const active = view === key;
-            const badge = key === "late" && lateTasks.length > 0 ? lateTasks.length : 0;
+            const badge  = key === "late" && lateTasks.length > 0 ? lateTasks.length : 0;
             return (
               <button key={key} onClick={() => setView(key)} style={{
                 fontSize:12, fontWeight:600, padding:"6px 12px", borderRadius:7, cursor:"pointer",
@@ -154,14 +185,12 @@ export default function Home() {
         </div>
       )}
 
-      {/* Adicionar manual */}
       {view === "add" && (
         <div style={{ padding:"0 20px", maxWidth:680 }}>
           <ManualForm onAdd={addTasks}/>
         </div>
       )}
 
-      {/* Importar em bloco */}
       {view === "import" && (
         <div style={{ padding:"0 20px", maxWidth:700 }}>
           <BulkImport onAdd={addTasks}/>
