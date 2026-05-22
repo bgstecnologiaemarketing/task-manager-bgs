@@ -1,10 +1,6 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// API Route segura — a chave da Anthropic NUNCA vai para o navegador
-// ─────────────────────────────────────────────────────────────────────────────
 export async function POST(request) {
   try {
     const body = await request.json();
-
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -15,16 +11,13 @@ export async function POST(request) {
       },
       body: JSON.stringify(body),
     });
-
     if (!response.ok) {
       const err = await response.text();
       return Response.json({ error: err }, { status: response.status });
     }
-
     const data = await response.json();
     return Response.json(data);
   } catch (error) {
-    console.error("API route error:", error);
-    return Response.json({ error: "Erro interno do servidor" }, { status: 500 });
+    return Response.json({ error: "Erro interno" }, { status: 500 });
   }
 }
