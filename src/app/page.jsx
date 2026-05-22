@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import KanbanColumn from "@/components/KanbanColumn";
 import ManualForm from "@/components/ManualForm";
 import BulkImport from "@/components/BulkImport";
@@ -17,29 +17,33 @@ const TABS = [
 ];
 
 export default function Home() {
-  const [tasks, setTasks]     = useState([]);
+  const [tasks,   setTasks]   = useState([]);
   const [loading, setLoading] = useState(true);
-  const [loadMsg, setLoadMsg] = useState("Conectando ao ClickUp...");
-  const [view, setView]       = useState("kanban");
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState("");
+  const [view,    setView]    = useState("kanban");
 
-  useEffect(() => {
-    async function load() {
-      try {
-        setLoadMsg("Buscando tarefas do ClickUp...");
-        const cuTasks = await fetchClickUpTasks();
-        if (cuTasks.length > 0) {
-          setTasks(cuTasks.map((t) => ({ ...EMPTY_FORM, ...t, id: t.id || uid() })));
-          setLoadMsg("");
-        } else {
-          setLoadMsg("Nenhuma tarefa encontrada.");
-        }
-      } catch {
-        setLoadMsg("Erro ao carregar. Tente recarregar a página.");
+  const loadTasks = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
+    else setSyncing(true);
+    setSyncMsg("");
+    try {
+      const cuTasks = await fetchClickUpTasks();
+      if (cuTasks.length > 0) {
+        setTasks(cuTasks.map((t) => ({ ...EMPTY_FORM, ...t, id: t.id || uid() })));
+        if (silent) setSyncMsg(`✅ ${cuTasks.length} tarefas atualizadas`);
+      } else {
+        setSyncMsg("⚠️ Nenhuma tarefa encontrada. Verifique a chave CLICKUP_API_KEY no Vercel.");
       }
-      setLoading(false);
+    } catch {
+      setSyncMsg("❌ Erro ao conectar ao ClickUp.");
     }
-    load();
+    setLoading(false);
+    setSyncing(false);
+    if (silent) setTimeout(() => setSyncMsg(""), 4000);
   }, []);
+
+  useEffect(() => { loadTasks(false); }, [loadTasks]);
 
   const lateTasks  = tasks.filter(isLate);
   const updateTask = (id, ch) => setTasks((p) => p.map((t) => t.id === id ? { ...t, ...ch } : t));
@@ -57,11 +61,12 @@ export default function Home() {
   ];
 
   if (loading) return (
-    <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
-      height:"100vh", gap:16, fontFamily:"'DM Sans','Segoe UI',sans-serif" }}>
-      <div style={{ fontSize:32 }}>⏳</div>
-      <div style={{ fontSize:15, fontWeight:600, color:"#2C2C2A" }}>Carregando tarefas</div>
-      <div style={{ fontSize:13, color:"#888780" }}>{loadMsg}</div>
+    <div style={{ display:"flex", flexDirection:"column", alignItems:"center",
+      justifyContent:"center", height:"100vh", gap:16,
+      fontFamily:"'DM Sans','Segoe UI',sans-serif", background:"#F7F6F2" }}>
+      <div style={{ fontSize:36 }}>🔄</div>
+      <div style={{ fontSize:15, fontWeight:700, color:"#2C2C2A" }}>Carregando tarefas do ClickUp</div>
+      <div style={{ fontSize:13, color:"#888780" }}>Buscando dados em tempo real...</div>
     </div>
   );
 
@@ -84,7 +89,22 @@ export default function Home() {
             ))}
           </div>
         </div>
-        <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
+
+        <div style={{ display:"flex", gap:5, flexWrap:"wrap", alignItems:"center" }}>
+          {/* Botão Sincronizar */}
+          <button
+            onClick={() => loadTasks(true)}
+            disabled={syncing}
+            style={{
+              fontSize:12, fontWeight:700, padding:"6px 14px", borderRadius:7, cursor:syncing?"not-allowed":"pointer",
+              border:"1.5px solid #C0DD97", background:syncing?"#F1EFE8":"#EAF3DE",
+              color:syncing?"#888780":"#3B6D11", display:"flex", alignItems:"center", gap:5,
+              transition:"all 0.15s"
+            }}>
+            {syncing ? "⏳ Sincronizando..." : "🔄 Sincronizar ClickUp"}
+          </button>
+
+          {/* Tabs */}
           {TABS.map(({ key, label }) => {
             const active = view === key;
             const badge  = key === "late" && lateTasks.length > 0 ? lateTasks.length : 0;
@@ -108,6 +128,18 @@ export default function Home() {
         </div>
       </div>
 
+      {/* Sync message */}
+      {syncMsg && (
+        <div style={{
+          margin:"10px 20px 0", padding:"8px 14px", borderRadius:8, fontSize:12, fontWeight:600,
+          background: syncMsg.startsWith("✅") ? "#EAF3DE" : syncMsg.startsWith("⚠️") ? "#FAEEDA" : "#FCEBEB",
+          color:       syncMsg.startsWith("✅") ? "#3B6D11" : syncMsg.startsWith("⚠️") ? "#854F0B" : "#A32D2D",
+          border: `1px solid ${syncMsg.startsWith("✅") ? "#C0DD97" : syncMsg.startsWith("⚠️") ? "#FAC775" : "#F7C1C1"}`,
+        }}>
+          {syncMsg}
+        </div>
+      )}
+
       {/* Stats */}
       <div style={{ display:"flex", gap:10, padding:"12px 20px", flexWrap:"wrap" }}>
         {stats.map((s) => (
@@ -125,16 +157,29 @@ export default function Home() {
       {/* Kanban */}
       {view === "kanban" && (
         <div style={{ padding:"0 20px" }}>
-          <div style={{ display:"flex", gap:12, overflowX:"auto", paddingBottom:8 }}>
-            {Object.keys(STATUS_LABELS).map((s) => (
-              <KanbanColumn key={s} status={s}
-                tasks={tasks.filter((t) => t.status === s)}
-                onUpdate={updateTask} onDelete={deleteTask}/>
-            ))}
-          </div>
-          <p style={{ color:"#C4C2BB", fontSize:11, textAlign:"center", marginTop:14 }}>
-            Clique em qualquer card para editar · Borda vermelha = atrasado · Badge azul = sincronizado com ClickUp
-          </p>
+          {tasks.length === 0 ? (
+            <div style={{ textAlign:"center", padding:48 }}>
+              <div style={{ fontSize:36 }}>📋</div>
+              <div style={{ fontWeight:700, fontSize:15, color:"#2C2C2A", marginTop:12 }}>Nenhuma tarefa carregada</div>
+              <div style={{ fontSize:13, color:"#888780", marginTop:6 }}>
+                Clique em <strong>🔄 Sincronizar ClickUp</strong> para buscar as tarefas,<br/>
+                ou verifique se a variável <code>CLICKUP_API_KEY</code> está configurada no Vercel.
+              </div>
+            </div>
+          ) : (
+            <>
+              <div style={{ display:"flex", gap:12, overflowX:"auto", paddingBottom:8 }}>
+                {Object.keys(STATUS_LABELS).map((s) => (
+                  <KanbanColumn key={s} status={s}
+                    tasks={tasks.filter((t) => t.status === s)}
+                    onUpdate={updateTask} onDelete={deleteTask}/>
+                ))}
+              </div>
+              <p style={{ color:"#C4C2BB", fontSize:11, textAlign:"center", marginTop:14 }}>
+                Clique em qualquer card para editar · Borda vermelha = atrasado · 🔄 Sincronizar para atualizar do ClickUp
+              </p>
+            </>
+          )}
         </div>
       )}
 
