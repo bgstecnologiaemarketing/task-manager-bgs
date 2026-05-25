@@ -10,12 +10,6 @@ export async function callClaude(body) {
   return res.json();
 }
 
-async function cuGet(path) {
-  const res = await fetch(`/api/clickup?path=${encodeURIComponent(path)}`);
-  if (!res.ok) throw new Error(`ClickUp ${path} → ${res.status}`);
-  return res.json();
-}
-
 async function cuPost(path, body) {
   const res = await fetch("/api/clickup", {
     method: "POST",
@@ -25,132 +19,13 @@ async function cuPost(path, body) {
   return res.json();
 }
 
-function mapPriority(p) {
-  if (!p) return "media";
-  const v = typeof p === "object" ? String(p.priority ?? p.id ?? "") : String(p);
-  if (v === "1" || v === "urgent") return "alta";
-  if (v === "2" || v === "high")   return "alta";
-  if (v === "4" || v === "low")    return "baixa";
-  return "media";
-}
-
-function mapStatus(s) {
-  if (!s) return "todo";
-  const v = (typeof s === "object" ? (s.status || s.type || "") : s).toLowerCase();
-  if (v.includes("progress") || v.includes("progresso") || v.includes("andamento")) return "doing";
-  if (v.includes("review")   || v.includes("revisão")   || v.includes("revisao"))   return "review";
-  if (v.includes("done")     || v.includes("complete")  || v.includes("concluí")    || v === "closed") return "done";
-  return "todo";
-}
-
-function mapAssignee(assignees) {
-  if (!assignees?.length) return "";
-  const known = ["242640789", "81406921", "158661063"];
-  for (const a of assignees) {
-    if (known.includes(String(a.id))) return String(a.id);
-  }
-  return "";
-}
-
-function msToDate(ms) {
-  if (!ms) return "";
-  try { return new Date(Number(ms)).toISOString().slice(0, 10); } catch { return ""; }
-}
-
-function toAppTask(t, listLabel) {
-  return {
-    id:            t.id,
-    title:         t.name || "",
-    description:   t.description || "",
-    assigneeId:    mapAssignee(t.assignees),
-    dueDate:       msToDate(t.due_date),
-    priority:      mapPriority(t.priority),
-    status:        mapStatus(t.status),
-    listId:        t.list?.id || "",
-    listName:      listLabel || t.list?.name || "",
-    clickupTaskId: t.id,
-    clickupUrl:    t.url || "",
-  };
-}
-
-// Listas com muitas tarefas de template — ignorar
-const SKIP_LIST_IDS = new Set([
-  "901107728057", // Organização Design/Mídias (100 - templates)
-  "901107728271", // Bendertec (100 - templates)
-  "901107729150", // BGS Tecnologia e Marketing Digital (100 - templates)
-  "901107728398", // Subelementos BGS (100)
-  "901107727779", // Subelementos Organização (100)
-  "901107727612", // Subelementos Rotina (98)
-]);
-
-async function fetchListTasks(listId, listLabel) {
-  // Pular listas de subelementos ou listas bloqueadas
-  if (listLabel?.toLowerCase().startsWith("subelement")) return [];
-  if (SKIP_LIST_IDS.has(listId)) return [];
-
-  const tasks = [];
-  let page = 0;
-  while (true) {
-    try {
-      const res = await cuGet(
-        `/list/${listId}/task?include_closed=false&subtasks=false&order_by=due_date&page=${page}`
-      );
-      const batch = res.tasks || [];
-      tasks.push(...batch);
-      if (batch.length < 100) break;
-      page++;
-      if (page > 4) break;
-    } catch { break; }
-  }
-  return tasks;
-}
-
+// Busca tarefas via rota server-side /api/tasks (sem timeout de browser)
 export async function fetchClickUpTasks() {
-  const TEAM_ID = "9011786898";
-  const allTasks = [];
-  const seenIds = new Set();
-
-  const addTasks = (tasks, label) => {
-    for (const t of tasks) {
-      if (!seenIds.has(t.id)) {
-        seenIds.add(t.id);
-        allTasks.push(toAppTask(t, label));
-      }
-    }
-  };
-
-  const spacesRes = await cuGet(`/team/${TEAM_ID}/space?archived=false`);
-  const spaces = spacesRes.spaces || [];
-
-  for (const space of spaces) {
-    // Folders → lists → tasks
-    const foldersRes = await cuGet(`/space/${space.id}/folder?archived=false`);
-    for (const folder of (foldersRes.folders || [])) {
-      const listsRes = await cuGet(`/folder/${folder.id}/list?archived=false`);
-      for (const list of (listsRes.lists || [])) {
-        const tasks = await fetchListTasks(list.id, list.name);
-        addTasks(tasks, `${folder.name} / ${list.name}`);
-      }
-    }
-
-    // Folderless lists
-    const flRes = await cuGet(`/space/${space.id}/list?archived=false`);
-    for (const list of (flRes.lists || [])) {
-      if (list.name?.toLowerCase().startsWith("subelement")) continue;
-      const tasks = await fetchListTasks(list.id, list.name);
-      addTasks(tasks, list.name);
-    }
-  }
-
-  // Ordenar: tarefas com prazo primeiro (mais próximas), sem prazo por último
-  allTasks.sort((a, b) => {
-    if (!a.dueDate && !b.dueDate) return 0;
-    if (!a.dueDate) return 1;
-    if (!b.dueDate) return -1;
-    return a.dueDate.localeCompare(b.dueDate);
-  });
-
-  return allTasks;
+  const res = await fetch("/api/tasks");
+  if (!res.ok) throw new Error(`/api/tasks falhou: ${res.status}`);
+  const data = await res.json();
+  if (data.error) throw new Error(data.error);
+  return data.tasks || [];
 }
 
 export async function createClickUpTask(task, listId) {
