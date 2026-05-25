@@ -7,12 +7,20 @@ import { CU_MEMBERS, CU_LISTS } from "@/lib/clickup";
 import { memberName } from "@/lib/clickup";
 import { createClickUpTask } from "@/lib/api";
 
+// Extrai nome do cliente/parceiro a partir do listName ("Classic Oil Motor / Tarefas" → "Classic Oil Motor")
+function clientName(listName) {
+  if (!listName) return "";
+  const parts = listName.split("/");
+  return parts[0].trim();
+}
+
 export default function TaskCard({ task, onUpdate, onDelete }) {
   const late = isLate(task);
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState("");
   const dot = late ? COLORS.late.dot : COLORS[task.status].dot;
+  const client = clientName(task.listName);
 
   const saveToClickUp = async (listId) => {
     if (!listId) return;
@@ -39,10 +47,33 @@ export default function TaskCard({ task, onUpdate, onDelete }) {
         borderLeft:`3px solid ${dot}`, borderRadius:8, padding:"10px 12px",
         marginBottom:7, cursor:"pointer", transition:"box-shadow 0.15s", fontSize:13 }}>
 
+      {/* ── Linha do cliente/parceiro ── */}
+      {client && (
+        <div style={{ fontSize:10, fontWeight:700, color:"#378ADD", textTransform:"uppercase",
+          letterSpacing:"0.06em", marginBottom:4, display:"flex", alignItems:"center", gap:4 }}>
+          <span style={{ display:"inline-block", width:5, height:5, borderRadius:"50%", background:"#378ADD" }}/>
+          {client}
+        </div>
+      )}
+
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:8 }}>
         <div style={{ flex:1 }}>
-          <div style={{ fontWeight:600, color:"#2C2C2A", lineHeight:1.35, marginBottom:4 }}>{task.title}</div>
-          <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
+          {/* Título */}
+          <div style={{ fontWeight:600, color:"#2C2C2A", lineHeight:1.35, marginBottom:5 }}>
+            {task.title}
+          </div>
+
+          {/* Descrição resumida (1 linha) quando fechado */}
+          {!open && task.description && (
+            <div style={{ color:"#B4B2A9", fontSize:11, lineHeight:1.4,
+              overflow:"hidden", display:"-webkit-box", WebkitLineClamp:1,
+              WebkitBoxOrient:"vertical", marginBottom:4 }}>
+              {task.description}
+            </div>
+          )}
+
+          {/* Responsável + badge ClickUp */}
+          <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap", marginTop:2 }}>
             {task.assigneeId && (
               <>
                 <Avatar id={task.assigneeId} size={18}/>
@@ -52,9 +83,12 @@ export default function TaskCard({ task, onUpdate, onDelete }) {
             {task.clickupTaskId && <CuBadge taskId={task.clickupTaskId} url={task.clickupUrl}/>}
           </div>
         </div>
+
+        {/* Prioridade + prazo */}
         <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:3, flexShrink:0 }}>
           {task.priority && (
-            <span style={{ fontSize:10, fontWeight:700, color:PRI[task.priority].color, textTransform:"uppercase", letterSpacing:"0.05em" }}>
+            <span style={{ fontSize:10, fontWeight:700, color:PRI[task.priority].color,
+              textTransform:"uppercase", letterSpacing:"0.05em" }}>
               {PRI[task.priority].label}
             </span>
           )}
@@ -66,20 +100,40 @@ export default function TaskCard({ task, onUpdate, onDelete }) {
           {task.dueDate && !late && (
             <span style={{ color:"#B4B2A9", fontSize:11 }}>{fmtDate(task.dueDate)}</span>
           )}
+          {/* Indicador de descrição */}
+          {task.description && !open && (
+            <span style={{ fontSize:9, color:"#C4C2BB" }}>▼ ver mais</span>
+          )}
         </div>
       </div>
 
+      {/* ── Painel expandido ao clicar ── */}
       {open && (
-        <div style={{ marginTop:10, borderTop:"1px solid #F1EFE8", paddingTop:10 }} onClick={(e) => e.stopPropagation()}>
-          {task.description && (
-            <div style={{ color:"#5F5E5A", fontSize:12, marginBottom:10, lineHeight:1.5 }}>{task.description}</div>
+        <div style={{ marginTop:10, borderTop:"1px solid #F1EFE8", paddingTop:10 }}
+          onClick={(e) => e.stopPropagation()}>
+
+          {/* Descrição completa */}
+          {task.description ? (
+            <div style={{ color:"#3C3C3A", fontSize:12, marginBottom:12, lineHeight:1.65,
+              background:"#FAFAF8", border:"1px solid #ECEAE3", borderRadius:6,
+              padding:"10px 12px", whiteSpace:"pre-wrap" }}>
+              {task.description}
+            </div>
+          ) : (
+            <div style={{ color:"#C4C2BB", fontSize:12, marginBottom:12, fontStyle:"italic" }}>
+              Sem descrição.
+            </div>
           )}
+
+          {/* Controles */}
           <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:8 }}>
             <select value={task.status} onChange={(e) => onUpdate(task.id, { status: e.target.value })} style={sel}>
               {Object.entries(STATUS_LABELS).map(([k,v]) => <option key={k} value={k}>{v}</option>)}
             </select>
             <select value={task.priority || "media"} onChange={(e) => onUpdate(task.id, { priority: e.target.value })} style={sel}>
-              <option value="alta">Alta</option><option value="media">Média</option><option value="baixa">Baixa</option>
+              <option value="alta">Alta</option>
+              <option value="media">Média</option>
+              <option value="baixa">Baixa</option>
             </select>
             <input type="date" value={task.dueDate || ""} onChange={(e) => onUpdate(task.id, { dueDate: e.target.value })} style={sel}/>
             <select value={task.assigneeId || ""} onChange={(e) => onUpdate(task.id, { assigneeId: e.target.value })} style={sel}>
@@ -88,6 +142,7 @@ export default function TaskCard({ task, onUpdate, onDelete }) {
             </select>
           </div>
 
+          {/* Salvar no ClickUp */}
           {!task.clickupTaskId ? (
             <div style={{ display:"flex", gap:6, alignItems:"center", flexWrap:"wrap" }}>
               <select defaultValue="" onChange={(e) => saveToClickUp(e.target.value)} disabled={saving}
@@ -100,7 +155,7 @@ export default function TaskCard({ task, onUpdate, onDelete }) {
           ) : (
             <div style={{ display:"flex", gap:6, alignItems:"center" }}>
               <CuBadge taskId={task.clickupTaskId} url={task.clickupUrl}/>
-              <span style={{ fontSize:11, color:"#888780" }}>Sincronizado</span>
+              <span style={{ fontSize:11, color:"#888780" }}>Sincronizado com ClickUp</span>
             </div>
           )}
 
@@ -114,4 +169,3 @@ export default function TaskCard({ task, onUpdate, onDelete }) {
     </div>
   );
 }
-
