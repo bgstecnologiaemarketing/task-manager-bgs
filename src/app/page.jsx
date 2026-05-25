@@ -34,7 +34,7 @@ export default function Home() {
       setTasks(loaded);
       if (silent) setSyncMsg(`✅ ${loaded.length} tarefas atualizadas do ClickUp`);
     } catch (e) {
-      setSyncMsg("❌ Erro ao conectar ao ClickUp: " + e.message);
+      setSyncMsg("❌ " + (e.message || "Erro desconhecido"));
     }
     setLoading(false);
     setSyncing(false);
@@ -217,3 +217,4 @@ export default function Home() {
     </div>
   );
 }
+
