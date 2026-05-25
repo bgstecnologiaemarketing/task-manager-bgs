@@ -1,6 +1,5 @@
 import { memberById, CU_MEMBERS } from "./clickup";
 
-// ── Claude API ────────────────────────────────────────────────────────────────
 export async function callClaude(body) {
   const res = await fetch("/api/claude", {
     method: "POST",
@@ -11,12 +10,12 @@ export async function callClaude(body) {
   return res.json();
 }
 
-// ── ClickUp REST proxy ────────────────────────────────────────────────────────
 async function cuGet(path) {
   const res = await fetch(`/api/clickup?path=${encodeURIComponent(path)}`);
-  if (!res.ok) throw new Error(`ClickUp GET ${path} falhou: ${res.status}`);
+  if (!res.ok) throw new Error(`ClickUp ${path} status ${res.status}`);
   return res.json();
 }
+
 async function cuPost(path, body) {
   const res = await fetch("/api/clickup", {
     method: "POST",
@@ -26,7 +25,6 @@ async function cuPost(path, body) {
   return res.json();
 }
 
-// ── Mappers ───────────────────────────────────────────────────────────────────
 function mapPriority(p) {
   if (!p) return "media";
   const v = typeof p === "object" ? String(p.priority ?? p.id ?? "") : String(p);
@@ -74,34 +72,63 @@ function toAppTask(t) {
   };
 }
 
-// ── Buscar tarefas: team → tasks direto (v2 team tasks) ──────────────────────
-export async function fetchClickUpTasks() {
-  // 1. Pegar team
-  const teamData = await cuGet("/team");
-  const team = teamData.teams?.[0];
-  if (!team) throw new Error("Nenhum team encontrado");
-
-  const teamId = team.id;
-  const allTasks = [];
-
-  // 2. Buscar tarefas direto pelo team (inclui todos os spaces/lists)
+// Busca tarefas de uma list com paginação
+async function fetchListTasks(listId) {
+  const tasks = [];
   let page = 0;
   while (true) {
-    const res = await cuGet(
-      `/team/${teamId}/task?include_closed=false&subtasks=false&order_by=due_date&reverse=false&page=${page}`
-    );
-    const tasks = res.tasks || [];
-    allTasks.push(...tasks);
-    // Para quando vier menos de 100 (última página)
-    if (tasks.length < 100) break;
-    page++;
-    if (page > 5) break; // segurança: máx 500 tarefas
+    try {
+      const res = await cuGet(`/list/${listId}/task?include_closed=false&subtasks=false&order_by=due_date&page=${page}`);
+      const batch = res.tasks || [];
+      tasks.push(...batch);
+      if (batch.length < 100) break;
+      page++;
+      if (page > 4) break;
+    } catch { break; }
+  }
+  return tasks;
+}
+
+export async function fetchClickUpTasks() {
+  const TEAM_ID = "9011786898";
+  const allTasks = [];
+  const seenIds = new Set();
+
+  // 1. Buscar todos os spaces do team
+  const spacesRes = await cuGet(`/team/${TEAM_ID}/space?archived=false`);
+  const spaces = spacesRes.spaces || [];
+
+  for (const space of spaces) {
+    // 2. Buscar folders do space
+    const foldersRes = await cuGet(`/space/${space.id}/folder?archived=false`);
+    const folders = foldersRes.folders || [];
+
+    for (const folder of folders) {
+      // 3. Buscar lists de cada folder
+      const listsRes = await cuGet(`/folder/${folder.id}/list?archived=false`);
+      const lists = listsRes.lists || [];
+      for (const list of lists) {
+        const tasks = await fetchListTasks(list.id);
+        for (const t of tasks) {
+          if (!seenIds.has(t.id)) { seenIds.add(t.id); allTasks.push(t); }
+        }
+      }
+    }
+
+    // 4. Buscar lists folderless do space
+    const flRes = await cuGet(`/space/${space.id}/list?archived=false`);
+    const flLists = flRes.lists || [];
+    for (const list of flLists) {
+      const tasks = await fetchListTasks(list.id);
+      for (const t of tasks) {
+        if (!seenIds.has(t.id)) { seenIds.add(t.id); allTasks.push(t); }
+      }
+    }
   }
 
   return allTasks.map(toAppTask);
 }
 
-// ── Criar tarefa no ClickUp ───────────────────────────────────────────────────
 export async function createClickUpTask(task, listId) {
   const member = memberById(task.assigneeId);
   const body = {
@@ -116,7 +143,6 @@ export async function createClickUpTask(task, listId) {
   return { success: false, error: res.err || JSON.stringify(res) };
 }
 
-// ── Parser IA ─────────────────────────────────────────────────────────────────
 export async function parseTasks(text) {
   const memberList = CU_MEMBERS.map((m) => `"${m.name}" → "${m.id}"`).join(", ");
   const data = await callClaude({
@@ -127,7 +153,7 @@ export async function parseTasks(text) {
       content: `Analise o texto e extraia TODAS as tarefas. Para cada uma retorne JSON com:
 - title: string (max 80 chars)
 - description: string (ou "")
-- assigneeId: string (ID do membro se identificado, senão ""). Membros: ${memberList}
+- assigneeId: string (ID se identificado, senão ""). Membros: ${memberList}
 - dueDate: YYYY-MM-DD ou ""
 - priority: "alta"|"media"|"baixa"
 - status: "todo"
