@@ -12,7 +12,7 @@ export async function callClaude(body) {
 
 async function cuGet(path) {
   const res = await fetch(`/api/clickup?path=${encodeURIComponent(path)}`);
-  if (!res.ok) throw new Error(`ClickUp ${path} status ${res.status}`);
+  if (!res.ok) throw new Error(`ClickUp ${path} → ${res.status}`);
   return res.json();
 }
 
@@ -57,7 +57,7 @@ function msToDate(ms) {
   try { return new Date(Number(ms)).toISOString().slice(0, 10); } catch { return ""; }
 }
 
-function toAppTask(t) {
+function toAppTask(t, listName) {
   return {
     id:            t.id,
     title:         t.name || "",
@@ -67,23 +67,27 @@ function toAppTask(t) {
     priority:      mapPriority(t.priority),
     status:        mapStatus(t.status),
     listId:        t.list?.id || "",
+    listName:      listName || t.list?.name || "",
     clickupTaskId: t.id,
     clickupUrl:    t.url || "",
   };
 }
 
-// Busca tarefas de uma list com paginação
-async function fetchListTasks(listId) {
+// Busca todas as páginas de uma list, ignorando listas de "Subelementos"
+async function fetchListTasks(listId, listName) {
+  if (listName?.toLowerCase().startsWith("subelement")) return [];
   const tasks = [];
   let page = 0;
   while (true) {
     try {
-      const res = await cuGet(`/list/${listId}/task?include_closed=false&subtasks=false&order_by=due_date&page=${page}`);
+      const res = await cuGet(
+        `/list/${listId}/task?include_closed=false&subtasks=false&order_by=due_date&page=${page}`
+      );
       const batch = res.tasks || [];
       tasks.push(...batch);
       if (batch.length < 100) break;
       page++;
-      if (page > 4) break;
+      if (page > 9) break; // máx 1000 por lista
     } catch { break; }
   }
   return tasks;
@@ -94,39 +98,48 @@ export async function fetchClickUpTasks() {
   const allTasks = [];
   const seenIds = new Set();
 
-  // 1. Buscar todos os spaces do team
   const spacesRes = await cuGet(`/team/${TEAM_ID}/space?archived=false`);
   const spaces = spacesRes.spaces || [];
 
   for (const space of spaces) {
-    // 2. Buscar folders do space
+    // Folders → lists → tasks
     const foldersRes = await cuGet(`/space/${space.id}/folder?archived=false`);
-    const folders = foldersRes.folders || [];
-
-    for (const folder of folders) {
-      // 3. Buscar lists de cada folder
+    for (const folder of (foldersRes.folders || [])) {
       const listsRes = await cuGet(`/folder/${folder.id}/list?archived=false`);
-      const lists = listsRes.lists || [];
-      for (const list of lists) {
-        const tasks = await fetchListTasks(list.id);
+      for (const list of (listsRes.lists || [])) {
+        const tasks = await fetchListTasks(list.id, list.name);
         for (const t of tasks) {
-          if (!seenIds.has(t.id)) { seenIds.add(t.id); allTasks.push(t); }
+          if (!seenIds.has(t.id)) {
+            seenIds.add(t.id);
+            allTasks.push(toAppTask(t, `${folder.name} / ${list.name}`));
+          }
         }
       }
     }
 
-    // 4. Buscar lists folderless do space
+    // Folderless lists → tasks (ignorar "Subelementos de ...")
     const flRes = await cuGet(`/space/${space.id}/list?archived=false`);
-    const flLists = flRes.lists || [];
-    for (const list of flLists) {
-      const tasks = await fetchListTasks(list.id);
+    for (const list of (flRes.lists || [])) {
+      if (list.name?.toLowerCase().startsWith("subelement")) continue;
+      const tasks = await fetchListTasks(list.id, list.name);
       for (const t of tasks) {
-        if (!seenIds.has(t.id)) { seenIds.add(t.id); allTasks.push(t); }
+        if (!seenIds.has(t.id)) {
+          seenIds.add(t.id);
+          allTasks.push(toAppTask(t, list.name));
+        }
       }
     }
   }
 
-  return allTasks.map(toAppTask);
+  // Ordena: sem prazo por último, depois por data mais próxima
+  allTasks.sort((a, b) => {
+    if (!a.dueDate && !b.dueDate) return 0;
+    if (!a.dueDate) return 1;
+    if (!b.dueDate) return -1;
+    return a.dueDate.localeCompare(b.dueDate);
+  });
+
+  return allTasks;
 }
 
 export async function createClickUpTask(task, listId) {
